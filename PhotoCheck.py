@@ -10,63 +10,96 @@ import os
 import datetime
 from PIL import Image
 import imagehash
-import datetime
 
-hashes  = {"HASH" : "FILE"}
-#duplicates_dict = {"HASH" : 1}
-duplicates = []
+SUPPORTED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".gif"}
+
+
+def find_duplicates(target_dir, hash_size=16, threshold=0, progress_callback=None):
+    """
+    Scan a directory for duplicate or perceptually similar images.
+
+    Returns:
+        clusters: list of lists, where each list is [hash_str, file1, file2, ...]
+    """
+    target_dir = os.path.abspath(target_dir)
+    if not os.path.isdir(target_dir):
+        raise ValueError(f"Directory not found: {target_dir}")
+
+    # Collect all image files
+    image_paths = []
+    for root, _, files in os.walk(target_dir):
+        for file in files:
+            ext = os.path.splitext(file)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                image_paths.append(os.path.join(root, file))
+
+    total = len(image_paths)
+    seen_hashes = {}  # hash_obj: [file_paths]
+
+    for index, path in enumerate(image_paths):
+        if progress_callback:
+            progress_callback(index + 1, total, path)
+
+        try:
+            with Image.open(path) as img:
+                current_hash = imagehash.phash(img, hash_size=hash_size)
+        except Exception as err:
+            # Skip invalid, unreadable, or corrupted image files
+            print(f"Skipping {path}: {err}", file=sys.stderr)
+            continue
+
+        matched_hash = None
+        if threshold == 0:
+            # Fast exact hash lookup
+            if current_hash in seen_hashes:
+                matched_hash = current_hash
+        else:
+            # Perceptual Hamming distance lookup
+            for existing_hash in seen_hashes:
+                if (current_hash - existing_hash) <= threshold:
+                    matched_hash = existing_hash
+                    break
+
+        if matched_hash is not None:
+            seen_hashes[matched_hash].append(path)
+        else:
+            seen_hashes[current_hash] = [path]
+
+    # Filter to groups with at least 2 images
+    clusters = []
+    for h, files in seen_hashes.items():
+        if len(files) > 1:
+            clusters.append(['#' + str(h)] + files)
+
+    return clusters
+
 
 def main(argv):
-        
-    for item in os.listdir(argv):
-        root, extension = os.path.splitext(item)
-        extension = extension.lower()
-        
-        if os.path.isdir(argv +'\\' + item):
-            print ("SubFolder: " + item)
-            main(argv +'\\' + item)
-            
-        if extension == ".png" or extension == ".jpg" or extension == ".jpeg" or extension == ".bmp":
-            hash = imagehash.phash(Image.open(argv +'\\' + item),16)
-            
-            if str(hash) in hashes:
-                print("DUPLICATE/SIMILAR IMAGE")
-                
-                found = False
-                for row in range(len(duplicates)):
-                    if duplicates[row][0] == ('#' + str(hash)) and not len(duplicates) == 0:
-                       duplicates[row].append('\t'+ argv +'\\' + item)
-                       break
-                if not found:
-                    duplicates.append(['#'+str(hash),'\t'+hashes[str(hash)],'\t'+ argv +'\\' + item])
-            else:
-                hashes[str(hash)] = argv +'\\' + item
-                #print(item)
-        # elif os.path.isdir(argv +'\\' + item):
-        #         print ("SubFolder: " + item)
-        #         main(argv +'\\' + item)
-                
-    print("Done Folder")
-    return 0
+    clusters = find_duplicates(argv, hash_size=16, threshold=0)
+    return clusters
 
 
 if __name__ == "__main__":
-   hashes  = {"HASH" : "FILE"}
-   #duplicates_dict = {"HASH" : 1}
-   duplicates = []
-   
-   main(sys.argv[1])
-   
-   if len(duplicates) == 0:
-       print("No Duplicate/Similar Photos Found")
-   else:
-       date = datetime.datetime.now()
-       file_path = ('\\'.join(sys.argv[0].split('\\')[0:-1]) +'\\' + 
-                        'PhotoDuplicates ' + str(date).replace(':','.') +'.txt' )
-       with open(file_path, 'w') as output:
-           for row in duplicates:
-               for column in row:
-                   output.write(str(column) + '\n')
-       output.close()
-       print(sys.argv[0].split('\\')[-1] + " Done")
-       print("Duplicate/Similar Photos Found. Please check Text file")
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} <folder_path>")
+        sys.exit(1)
+
+    target_folder = sys.argv[1]
+    duplicates = main(target_folder)
+
+    if not duplicates:
+        print("No Duplicate/Similar Photos Found")
+    else:
+        date = datetime.datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
+        script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        file_path = os.path.join(script_dir, f"PhotoDuplicates_{date}.txt")
+
+        with open(file_path, "w", encoding="utf-8") as output:
+            for cluster in duplicates:
+                output.write(f"{cluster[0]}\n")
+                for filepath in cluster[1:]:
+                    output.write(f"\t{filepath}\n")
+
+        print(f"{os.path.basename(sys.argv[0])} Done")
+        print(f"Duplicate/Similar Photos Found. Report saved to:\n  {file_path}")
+
